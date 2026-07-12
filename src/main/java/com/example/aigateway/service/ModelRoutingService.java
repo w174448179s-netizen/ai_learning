@@ -10,9 +10,14 @@ import org.springframework.stereotype.Service;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
+import jakarta.annotation.PostConstruct;
+import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
 
 @Slf4j
 @Service
@@ -21,6 +26,47 @@ public class ModelRoutingService {
 
     private final List<ModelAdapter> modelAdapters;
     private final Map<ModelType, ModelType> fallbackMap = new ConcurrentHashMap<>();
+    private final Map<ModelType, Boolean> healthCache = new ConcurrentHashMap<>();
+    private final Map<ModelType, Instant> healthCacheTime = new ConcurrentHashMap<>();
+    
+    private static final long CACHE_TTL_SECONDS = 30;
+
+    @PostConstruct
+    public void init() {
+        refreshHealthCache();
+        ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor();
+        scheduler.scheduleAtFixedRate(this::refreshHealthCache, CACHE_TTL_SECONDS, CACHE_TTL_SECONDS, TimeUnit.SECONDS);
+        log.info("Health check scheduler started with {}s interval", CACHE_TTL_SECONDS);
+    }
+
+    private void refreshHealthCache() {
+        log.debug("Refreshing health cache...");
+        modelAdapters.forEach(adapter -> {
+            ModelType type = findModelType(adapter);
+            adapter.healthCheck().subscribe(
+                healthy -> {
+                    healthCache.put(type, healthy);
+                    healthCacheTime.put(type, Instant.now());
+                    if (!healthy) {
+                        log.warn("Model {} is unhealthy", type);
+                    }
+                },
+                error -> {
+                    healthCache.put(type, false);
+                    healthCacheTime.put(type, Instant.now());
+                    log.warn("Health check failed for model {}: {}", type, error.getMessage());
+                }
+            );
+        });
+    }
+
+    private boolean isHealthy(ModelType modelType) {
+        Instant lastCheck = healthCacheTime.get(modelType);
+        if (lastCheck != null && Instant.now().isBefore(lastCheck.plusSeconds(CACHE_TTL_SECONDS))) {
+            return healthCache.getOrDefault(modelType, false);
+        }
+        return false;
+    }
 
     public Mono<ModelResponse> routeChat(ModelRequest request) {
         return findHealthyAdapter(request.getModelType())
@@ -45,26 +91,21 @@ public class ModelRoutingService {
     private Mono<ModelAdapter> findHealthyAdapter(ModelType modelType) {
         ModelAdapter primaryAdapter = findAdapter(modelType);
         
-        return primaryAdapter.healthCheck()
-            .flatMap(healthy -> {
-                if (healthy) {
-                    return Mono.just(primaryAdapter);
-                }
+        if (isHealthy(modelType)) {
+            return Mono.just(primaryAdapter);
+        }
 
-                log.warn("Primary adapter for {} is unhealthy, attempting fallback", modelType);
-                
-                ModelType fallbackType = fallbackMap.getOrDefault(modelType, getDefaultFallback(modelType));
-                ModelAdapter fallbackAdapter = findAdapter(fallbackType);
-                
-                return fallbackAdapter.healthCheck()
-                    .flatMap(fallbackHealthy -> {
-                        if (fallbackHealthy) {
-                            log.info("Using fallback adapter: {} -> {}", modelType, fallbackType);
-                            return Mono.just(fallbackAdapter);
-                        }
-                        return Mono.error(new RuntimeException("No healthy adapter available for model type: " + modelType));
-                    });
-            });
+        log.warn("Primary adapter for {} is unhealthy, attempting fallback", modelType);
+        
+        ModelType fallbackType = fallbackMap.getOrDefault(modelType, getDefaultFallback(modelType));
+        
+        if (isHealthy(fallbackType)) {
+            ModelAdapter fallbackAdapter = findAdapter(fallbackType);
+            log.info("Using fallback adapter: {} -> {}", modelType, fallbackType);
+            return Mono.just(fallbackAdapter);
+        }
+        
+        return Mono.error(new RuntimeException("No healthy adapter available for model type: " + modelType));
     }
 
     private ModelAdapter findAdapter(ModelType modelType) {
