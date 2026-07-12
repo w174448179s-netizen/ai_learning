@@ -27,20 +27,21 @@ public class GatewayController {
     private final CircuitBreakerOperator<Object> circuitBreakerOperator;
     private final RateLimiterOperator<Object> rateLimiterOperator;
 
-    @PostMapping(value = "/chat", produces = {MediaType.APPLICATION_JSON_VALUE, MediaType.TEXT_EVENT_STREAM_VALUE})
-    public Object chat(@RequestBody ModelRequest request) {
-        log.info("Received chat request for model type: {}, stream: {}", request.getModelType(), request.getStream());
-        
-        if (Boolean.TRUE.equals(request.getStream())) {
-            return routingService.routeStreamChat(request)
-                .transform(rateLimiterOperator)
-                .transform(circuitBreakerOperator);
-        }
-        
+    @PostMapping("/chat")
+    public Mono<ResponseEntity<ModelResponse>> chat(@RequestBody ModelRequest request) {
+        log.info("Received chat request for model type: {}", request.getModelType());
         return routingService.routeChat(request)
             .transform(rateLimiterOperator)
             .transform(circuitBreakerOperator)
             .map(ResponseEntity::ok);
+    }
+
+    @PostMapping(value = "/chat/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+    public Flux<String> streamChat(@RequestBody ModelRequest request) {
+        log.info("Received stream chat request for model type: {}", request.getModelType());
+        return routingService.routeStreamChat(request)
+            .transform(rateLimiterOperator)
+            .transform(circuitBreakerOperator);
     }
 
     @GetMapping("/health")
