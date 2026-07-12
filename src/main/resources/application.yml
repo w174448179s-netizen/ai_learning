@@ -1,0 +1,49 @@
+server:
+  port: 8080
+
+spring:
+  application:
+    name: ai-gateway
+
+  ai:
+    openai:
+      api-key: ${OPENAI_API_KEY:sk-demo-key}
+      base-url: ${OPENAI_BASE_URL:https://api.openai.com/v1}
+    claude:
+      api-key: ${CLAUDE_API_KEY:}
+      base-url: ${CLAUDE_BASE_URL:https://api.anthropic.com/v1}
+    deepseek:
+      api-key: ${DEEPSEEK_API_KEY:}
+      base-url: ${DEEPSEEK_BASE_URL:https://api.deepseek.com/v1}
+    tongyi:
+      api-key: ${TONGYI_API_KEY:}
+      base-url: ${TONGYI_BASE_URL:https://dashscope.aliyuncs.com/compatible-mode/v1}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health, info, metrics
+
+resilience4j:
+  ratelimiter:
+    instances:
+      ai-gateway:
+        limit-for-period: 100
+        limit-refresh-period: 1s
+        timeout-duration: 500ms
+  circuitbreaker:
+    instances:
+      ai-gateway:
+        failure-rate-threshold: 50
+        slow-call-rate-threshold: 50
+        slow-call-duration-threshold: 5s
+        sliding-window-size: 10
+        minimum-number-of-calls: 5
+        wait-duration-in-open-state: 10s
+        permitted-number-of-calls-in-half-open-state: 3
+        automatic-transition-from-open-to-half-open-enabled: true
+
+logging:
+  pattern:
+    console: "%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{36} [%X{traceId}] - %msg%n"

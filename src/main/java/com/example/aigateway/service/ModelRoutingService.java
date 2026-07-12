@@ -1,0 +1,98 @@
+package com.example.aigateway.service;
+
+import com.example.aigateway.adapter.ModelAdapter;
+import com.example.aigateway.dto.ModelRequest;
+import com.example.aigateway.dto.ModelResponse;
+import com.example.aigateway.dto.ModelType;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.stereotype.Service;
+import reactor.core.publisher.Flux;
+import reactor.core.publisher.Mono;
+
+import java.util.List;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+
+@Slf4j
+@Service
+@RequiredArgsConstructor
+public class ModelRoutingService {
+
+    private final List<ModelAdapter> modelAdapters;
+    private final Map<ModelType, ModelType> fallbackMap = new ConcurrentHashMap<>();
+
+    public Mono<ModelResponse> routeChat(ModelRequest request) {
+        return findHealthyAdapter(request.getModelType())
+            .flatMap(adapter -> adapter.chat(request));
+    }
+
+    public Flux<String> routeStreamChat(ModelRequest request) {
+        return findHealthyAdapter(request.getModelType())
+            .flatMapMany(adapter -> adapter.streamChat(request));
+    }
+
+    public Mono<Map<ModelType, Boolean>> getHealthStatus() {
+        return Flux.fromIterable(modelAdapters)
+            .flatMap(adapter -> {
+                ModelType type = findModelType(adapter);
+                return adapter.healthCheck()
+                    .map(healthy -> Map.entry(type, healthy));
+            })
+            .collectMap(Map.Entry::getKey, Map.Entry::getValue);
+    }
+
+    private Mono<ModelAdapter> findHealthyAdapter(ModelType modelType) {
+        ModelAdapter primaryAdapter = findAdapter(modelType);
+        
+        return primaryAdapter.healthCheck()
+            .flatMap(healthy -> {
+                if (healthy) {
+                    return Mono.just(primaryAdapter);
+                }
+
+                log.warn("Primary adapter for {} is unhealthy, attempting fallback", modelType);
+                
+                ModelType fallbackType = fallbackMap.getOrDefault(modelType, getDefaultFallback(modelType));
+                ModelAdapter fallbackAdapter = findAdapter(fallbackType);
+                
+                return fallbackAdapter.healthCheck()
+                    .flatMap(fallbackHealthy -> {
+                        if (fallbackHealthy) {
+                            log.info("Using fallback adapter: {} -> {}", modelType, fallbackType);
+                            return Mono.just(fallbackAdapter);
+                        }
+                        return Mono.error(new RuntimeException("No healthy adapter available for model type: " + modelType));
+                    });
+            });
+    }
+
+    private ModelAdapter findAdapter(ModelType modelType) {
+        return modelAdapters.stream()
+            .filter(adapter -> adapter.supports(modelType))
+            .findFirst()
+            .orElseThrow(() -> new IllegalArgumentException("Unsupported model type: " + modelType));
+    }
+
+    private ModelType findModelType(ModelAdapter adapter) {
+        for (ModelType type : ModelType.values()) {
+            if (adapter.supports(type)) {
+                return type;
+            }
+        }
+        return ModelType.OPENAI;
+    }
+
+    private ModelType getDefaultFallback(ModelType modelType) {
+        return switch (modelType) {
+            case OPENAI -> ModelType.DEEPSEEK;
+            case CLAUDE -> ModelType.OPENAI;
+            case DEEPSEEK -> ModelType.TONGYI;
+            case TONGYI -> ModelType.OPENAI;
+        };
+    }
+
+    public void setFallback(ModelType primary, ModelType fallback) {
+        fallbackMap.put(primary, fallback);
+    }
+}
