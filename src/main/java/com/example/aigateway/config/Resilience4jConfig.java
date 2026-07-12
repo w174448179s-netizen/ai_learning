@@ -4,11 +4,8 @@ import io.github.resilience4j.circuitbreaker.CircuitBreaker;
 import io.github.resilience4j.circuitbreaker.CircuitBreakerConfig;
 import io.github.resilience4j.ratelimiter.RateLimiter;
 import io.github.resilience4j.ratelimiter.RateLimiterConfig;
-import io.github.resilience4j.reactor.circuitbreaker.operator.CircuitBreakerOperator;
-import io.github.resilience4j.reactor.ratelimiter.operator.RateLimiterOperator;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
-import reactor.core.publisher.Mono;
 
 import java.time.Duration;
 
@@ -39,15 +36,5 @@ public class Resilience4jConfig {
             .automaticTransitionFromOpenToHalfOpenEnabled(true)
             .build();
         return CircuitBreaker.of("ai-gateway", config);
-    }
-
-    @Bean
-    public CircuitBreakerOperator<Object> circuitBreakerOperator(CircuitBreaker circuitBreaker) {
-        return CircuitBreakerOperator.of(circuitBreaker);
-    }
-
-    @Bean
-    public RateLimiterOperator<Object> rateLimiterOperator(RateLimiter rateLimiter) {
-        return RateLimiterOperator.of(rateLimiter);
     }
 }
