@@ -4,8 +4,6 @@ import com.example.aigateway.dto.ModelRequest;
 import com.example.aigateway.dto.ModelResponse;
 import com.example.aigateway.dto.ModelType;
 import com.example.aigateway.service.ModelRoutingService;
-import io.github.resilience4j.reactor.circuitbreaker.operator.CircuitBreakerOperator;
-import io.github.resilience4j.reactor.ratelimiter.operator.RateLimiterOperator;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.Mock;
@@ -25,22 +23,13 @@ class GatewayControllerTest {
     @Mock
     private ModelRoutingService routingService;
 
-    @Mock
-    private CircuitBreakerOperator<Object> circuitBreakerOperator;
-
-    @Mock
-    private RateLimiterOperator<Object> rateLimiterOperator;
-
     private WebTestClient webTestClient;
 
     @BeforeEach
     void setUp() {
         MockitoAnnotations.openMocks(this);
         
-        when(circuitBreakerOperator.apply(any())).thenAnswer(invocation -> invocation.getArgument(0));
-        when(rateLimiterOperator.apply(any())).thenAnswer(invocation -> invocation.getArgument(0));
-        
-        GatewayController controller = new GatewayController(routingService, circuitBreakerOperator, rateLimiterOperator);
+        GatewayController controller = new GatewayController(routingService);
         webTestClient = WebTestClient.bindToController(controller).build();
     }
 
@@ -82,8 +71,7 @@ class GatewayControllerTest {
             .bodyValue(Map.of(
                 "modelType", "OPENAI",
                 "model", "gpt-3.5-turbo",
-                "messages", List.of(Map.of("role", "user", "content", "Hello")),
-                "stream", true
+                "messages", List.of(Map.of("role", "user", "content", "Hello"))
             ))
             .exchange()
             .expectStatus().isOk()
@@ -112,5 +100,94 @@ class GatewayControllerTest {
             .expectStatus().isOk()
             .expectBody()
             .jsonPath("$.length()").isEqualTo(4);
+    }
+
+    @Test
+    void testChatEndpointWithClaude() {
+        ModelResponse expectedResponse = ModelResponse.builder()
+            .content("Claude response")
+            .model("claude-3-sonnet")
+            .build();
+
+        when(routingService.routeChat(any())).thenReturn(Mono.just(expectedResponse));
+
+        webTestClient.post()
+            .uri("/api/v1/chat")
+            .contentType(MediaType.APPLICATION_JSON)
+            .bodyValue(Map.of(
+                "modelType", "CLAUDE",
+                "model", "claude-3-sonnet",
+                "messages", List.of(Map.of("role", "user", "content", "Hello"))
+            ))
+            .exchange()
+            .expectStatus().isOk()
+            .expectBody(ModelResponse.class)
+            .consumeWith(result -> {
+                ModelResponse response = result.getResponseBody();
+                assert response != null;
+                assert "Claude response".equals(response.getContent());
+            });
+    }
+
+    @Test
+    void testChatEndpointMissingMessages() {
+        when(routingService.routeChat(any())).thenReturn(Mono.error(new IllegalArgumentException("Messages required")));
+
+        webTestClient.post()
+            .uri("/api/v1/chat")
+            .contentType(MediaType.APPLICATION_JSON)
+            .bodyValue(Map.of(
+                "modelType", "OPENAI",
+                "model", "gpt-3.5-turbo"
+            ))
+            .exchange()
+            .expectStatus().isBadRequest();
+    }
+
+    @Test
+    void testChatEndpointUnsupportedModelType() {
+        when(routingService.routeChat(any())).thenReturn(Mono.error(new IllegalArgumentException("Unsupported model type")));
+
+        webTestClient.post()
+            .uri("/api/v1/chat")
+            .contentType(MediaType.APPLICATION_JSON)
+            .bodyValue(Map.of(
+                "modelType", "UNKNOWN",
+                "model", "unknown-model",
+                "messages", List.of(Map.of("role", "user", "content", "Hello"))
+            ))
+            .exchange()
+            .expectStatus().isBadRequest();
+    }
+
+    @Test
+    void testStreamChatEndpointWithEmptyMessages() {
+        when(routingService.routeStreamChat(any()))
+            .thenReturn(Flux.error(new IllegalArgumentException("Messages cannot be empty")));
+
+        webTestClient.post()
+            .uri("/api/v1/chat/stream")
+            .contentType(MediaType.APPLICATION_JSON)
+            .bodyValue(Map.of(
+                "modelType", "OPENAI",
+                "model", "gpt-3.5-turbo",
+                "messages", List.of()
+            ))
+            .exchange()
+            .expectStatus().isBadRequest();
+    }
+
+    @Test
+    void testHealthEndpointAllUnhealthy() {
+        when(routingService.getHealthStatus())
+            .thenReturn(Mono.just(Map.of(ModelType.OPENAI, false, ModelType.CLAUDE, false)));
+
+        webTestClient.get()
+            .uri("/api/v1/health")
+            .exchange()
+            .expectStatus().isOk()
+            .expectBody()
+            .jsonPath("$.status").isEqualTo("UP")
+            .jsonPath("$.modelProviders.OPENAI").isEqualTo(false);
     }
 }

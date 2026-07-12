@@ -5,6 +5,9 @@ spring:
   application:
     name: ai-gateway
 
+gateway:
+  api-keys: ${API_KEYS:sk-demo-key,sk-test-key}
+
   ai:
     openai:
       api-key: ${OPENAI_API_KEY:sk-demo-key}

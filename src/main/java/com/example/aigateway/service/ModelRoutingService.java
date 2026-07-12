@@ -14,7 +14,10 @@ import jakarta.annotation.PostConstruct;
 import java.time.Instant;
 import java.util.List;
 import java.util.Map;
+import java.util.Random;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentSkipListSet;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
@@ -29,7 +32,12 @@ public class ModelRoutingService {
     private final Map<ModelType, Boolean> healthCache = new ConcurrentHashMap<>();
     private final Map<ModelType, Instant> healthCacheTime = new ConcurrentHashMap<>();
     
+    private final Map<ModelType, ModelType> canaryMap = new ConcurrentHashMap<>();
+    private final Map<ModelType, Integer> canaryWeightMap = new ConcurrentHashMap<>();
+    private final Set<String> canaryWhitelist = new ConcurrentSkipListSet<>();
+    
     private static final long CACHE_TTL_SECONDS = 30;
+    private static final Random RANDOM = new Random();
 
     @PostConstruct
     public void init() {
@@ -76,6 +84,58 @@ public class ModelRoutingService {
     public Flux<String> routeStreamChat(ModelRequest request) {
         return findHealthyAdapter(request.getModelType())
             .flatMapMany(adapter -> adapter.streamChat(request));
+    }
+
+    public Mono<ModelResponse> routeChatWithCanary(ModelRequest request, String clientId) {
+        ModelType targetType = applyCanaryRouting(request.getModelType(), clientId);
+        request = ModelRequest.builder()
+            .modelType(targetType)
+            .model(request.getModel())
+            .messages(request.getMessages())
+            .temperature(request.getTemperature())
+            .maxTokens(request.getMaxTokens())
+            .topP(request.getTopP())
+            .stream(request.getStream())
+            .extras(request.getExtras())
+            .build();
+        
+        return routeChat(request);
+    }
+
+    public Flux<String> routeStreamChatWithCanary(ModelRequest request, String clientId) {
+        ModelType targetType = applyCanaryRouting(request.getModelType(), clientId);
+        request = ModelRequest.builder()
+            .modelType(targetType)
+            .model(request.getModel())
+            .messages(request.getMessages())
+            .temperature(request.getTemperature())
+            .maxTokens(request.getMaxTokens())
+            .topP(request.getTopP())
+            .stream(request.getStream())
+            .extras(request.getExtras())
+            .build();
+        
+        return routeStreamChat(request);
+    }
+
+    private ModelType applyCanaryRouting(ModelType originalType, String clientId) {
+        ModelType canaryType = canaryMap.get(originalType);
+        if (canaryType == null) {
+            return originalType;
+        }
+
+        if (canaryWhitelist.contains(clientId)) {
+            log.debug("Client {} is in canary whitelist, routing to {}", clientId, canaryType);
+            return canaryType;
+        }
+
+        Integer weight = canaryWeightMap.getOrDefault(originalType, 0);
+        if (weight > 0 && RANDOM.nextInt(100) < weight) {
+            log.debug("Random canary routing triggered for client {}, routing to {}", clientId, canaryType);
+            return canaryType;
+        }
+
+        return originalType;
     }
 
     public Mono<Map<ModelType, Boolean>> getHealthStatus() {
@@ -135,5 +195,27 @@ public class ModelRoutingService {
 
     public void setFallback(ModelType primary, ModelType fallback) {
         fallbackMap.put(primary, fallback);
+    }
+
+    public void setCanary(ModelType primary, ModelType canary, int weight) {
+        canaryMap.put(primary, canary);
+        canaryWeightMap.put(primary, weight);
+        log.info("Canary routing configured: {} -> {} with weight {}", primary, canary, weight);
+    }
+
+    public void addCanaryWhitelist(String clientId) {
+        canaryWhitelist.add(clientId);
+        log.info("Added client {} to canary whitelist", clientId);
+    }
+
+    public void removeCanaryWhitelist(String clientId) {
+        canaryWhitelist.remove(clientId);
+        log.info("Removed client {} from canary whitelist", clientId);
+    }
+
+    public void clearCanary() {
+        canaryMap.clear();
+        canaryWeightMap.clear();
+        log.info("Canary routing cleared");
     }
 }
