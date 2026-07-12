@@ -4,6 +4,7 @@ import com.example.aigateway.dto.ModelRequest;
 import com.example.aigateway.dto.ModelResponse;
 import com.example.aigateway.dto.ModelType;
 import com.example.aigateway.service.ModelRoutingService;
+import com.example.aigateway.util.JwtUtil;
 import io.github.resilience4j.circuitbreaker.annotation.CircuitBreaker;
 import io.github.resilience4j.ratelimiter.annotation.RateLimiter;
 import lombok.RequiredArgsConstructor;
@@ -16,6 +17,7 @@ import reactor.core.publisher.Mono;
 
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
 
 @Slf4j
 @RestController
@@ -24,6 +26,7 @@ import java.util.Map;
 public class GatewayController {
 
     private final ModelRoutingService routingService;
+    private final JwtUtil jwtUtil;
 
     @PostMapping("/chat")
     @RateLimiter(name = "ai-gateway", fallbackMethod = "chatFallback")
@@ -67,6 +70,49 @@ public class GatewayController {
     @GetMapping("/models")
     public ResponseEntity<List<ModelType>> getSupportedModels() {
         return ResponseEntity.ok(List.of(ModelType.values()));
+    }
+
+    @PostMapping("/auth/login")
+    public ResponseEntity<Map<String, Object>> login(@RequestParam String apiKey) {
+        String clientId = UUID.randomUUID().toString();
+        String token = jwtUtil.generateToken(clientId, Map.of(
+            "apiKey", apiKey.substring(Math.max(0, apiKey.length() - 4)),
+            "type", "access"
+        ));
+        
+        log.info("Generated JWT token for client: {}", clientId);
+        
+        return ResponseEntity.ok(Map.of(
+            "token", token,
+            "clientId", clientId,
+            "expiresIn", 86400
+        ));
+    }
+
+    @PostMapping("/auth/refresh")
+    public ResponseEntity<Map<String, Object>> refresh(@RequestHeader("Authorization") String authHeader) {
+        if (authHeader == null || !authHeader.startsWith("Bearer ")) {
+            return ResponseEntity.badRequest().body(Map.of("error", "Invalid token format"));
+        }
+        
+        String token = authHeader.substring(7);
+        
+        if (!jwtUtil.validateToken(token)) {
+            return ResponseEntity.badRequest().body(Map.of("error", "Invalid or expired token"));
+        }
+        
+        String clientId = jwtUtil.extractClientId(token);
+        String newToken = jwtUtil.generateToken(clientId, Map.of(
+            "type", "access"
+        ));
+        
+        log.info("Refreshed JWT token for client: {}", clientId);
+        
+        return ResponseEntity.ok(Map.of(
+            "token", newToken,
+            "clientId", clientId,
+            "expiresIn", 86400
+        ));
     }
 
     @PostMapping("/canary/configure")
