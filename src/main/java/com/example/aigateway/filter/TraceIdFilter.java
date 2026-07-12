@@ -27,10 +27,7 @@ public class TraceIdFilter implements WebFilter {
 
     @Override
     public Mono<Void> filter(ServerWebExchange exchange, WebFilterChain chain) {
-        String traceId = exchange.getRequest().getHeaders().getFirst(TRACE_ID_HEADER);
-        if (traceId == null || traceId.isEmpty()) {
-            traceId = UUID.randomUUID().toString().replace("-", "");
-        }
+        String traceId = UUID.randomUUID().toString().replace("-", "");
 
         MDC.put(TRACE_ID_CONTEXT_KEY, traceId);
         exchange.getResponse().getHeaders().add(TRACE_ID_HEADER, traceId);
