@@ -6,10 +6,15 @@ spring:
     name: ai-gateway
 
 gateway:
-  api-keys: ${API_KEYS:sk-demo-key,sk-test-key}
-  jwt:
-    secret: ${JWT_SECRET:ai-gateway-secret-key-must-be-at-least-32-chars-long-for-hmac-sha256}
-    expiry-hours: ${JWT_EXPIRY_HOURS:24}
+  auth:
+    mode: ${AUTH_MODE:SSO}
+    api-keys: ${API_KEYS:}
+    jwt:
+      enabled: ${JWT_ENABLED:true}
+      secret: ${JWT_SECRET:ai-gateway-secret-key-must-be-at-least-32-chars-long-for-hmac-sha256}
+      expiry-hours: ${JWT_EXPIRY_HOURS:24}
+      sso-jwks-url: ${SSO_JWKS_URL:}
+      sso-issuer: ${SSO_ISSUER:}
 
   ai:
     openai:

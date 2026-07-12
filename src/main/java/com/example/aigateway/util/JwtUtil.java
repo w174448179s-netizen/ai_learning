@@ -1,10 +1,11 @@
 package com.example.aigateway.util;
 
+import com.example.aigateway.config.AuthConfig;
 import io.jsonwebtoken.Claims;
 import io.jsonwebtoken.Jwts;
 import io.jsonwebtoken.security.Keys;
+import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
 import javax.crypto.SecretKey;
@@ -16,22 +17,20 @@ import java.util.function.Function;
 
 @Slf4j
 @Component
+@RequiredArgsConstructor
 public class JwtUtil {
 
-    @Value("${gateway.jwt.secret:ai-gateway-secret-key-must-be-at-least-32-chars-long}")
-    private String jwtSecret;
-
-    @Value("${gateway.jwt.expiry-hours:24}")
-    private long expiryHours;
+    private final AuthConfig authConfig;
 
     private SecretKey getSigningKey() {
+        String jwtSecret = authConfig.getJwt().getSecret();
         byte[] keyBytes = jwtSecret.getBytes(StandardCharsets.UTF_8);
         return Keys.hmacShaKeyFor(keyBytes);
     }
 
     public String generateToken(String clientId, Map<String, Object> extraClaims) {
         Instant now = Instant.now();
-        Instant expiry = now.plusSeconds(expiryHours * 3600);
+        Instant expiry = now.plusSeconds(authConfig.getJwt().getExpiryHours() * 3600);
 
         return Jwts.builder()
             .claims(extraClaims)
@@ -48,8 +47,23 @@ public class JwtUtil {
 
     public boolean validateToken(String token) {
         try {
-            parseToken(token);
-            return !isTokenExpired(token);
+            Claims claims = parseToken(token);
+            
+            if (isTokenExpired(token)) {
+                log.warn("JWT token expired");
+                return false;
+            }
+            
+            String ssoIssuer = authConfig.getJwt().getSsoIssuer();
+            if (ssoIssuer != null && !ssoIssuer.isEmpty()) {
+                String tokenIssuer = claims.getIssuer();
+                if (!ssoIssuer.equals(tokenIssuer)) {
+                    log.warn("Invalid JWT issuer: expected {}, got {}", ssoIssuer, tokenIssuer);
+                    return false;
+                }
+            }
+            
+            return true;
         } catch (Exception e) {
             log.warn("Invalid JWT token: {}", e.getMessage());
             return false;
@@ -70,11 +84,21 @@ public class JwtUtil {
     }
 
     private Claims parseToken(String token) {
-        return Jwts.parser()
-            .verifyWith(getSigningKey())
-            .build()
-            .parseSignedClaims(token)
-            .getPayload();
+        String ssoJwksUrl = authConfig.getJwt().getSsoJwksUrl();
+        
+        if (ssoJwksUrl != null && !ssoJwksUrl.isEmpty()) {
+            return Jwts.parser()
+                .verifyWith(getSigningKey())
+                .build()
+                .parseSignedClaims(token)
+                .getPayload();
+        } else {
+            return Jwts.parser()
+                .verifyWith(getSigningKey())
+                .build()
+                .parseSignedClaims(token)
+                .getPayload();
+        }
     }
 
     private boolean isTokenExpired(String token) {

@@ -1,7 +1,8 @@
 package com.example.aigateway.filter;
 
+import com.example.aigateway.config.AuthConfig;
+import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Component;
 import org.springframework.web.server.ServerWebExchange;
@@ -17,19 +18,23 @@ import java.util.concurrent.ConcurrentHashMap;
 
 @Slf4j
 @Component
+@RequiredArgsConstructor
 public class ApiKeyAuthFilter implements WebFilter {
 
     private static final String API_KEY_HEADER = "Authorization";
     private static final String API_KEY_PREFIX = "Bearer ";
 
-    @Value("${gateway.api-keys:sk-demo-key}")
-    private String apiKeys;
+    private final AuthConfig authConfig;
 
     private final Set<String> validKeys = new HashSet<>();
     private final Map<String, Instant> keyExpiryMap = new ConcurrentHashMap<>();
 
     @Override
     public Mono<Void> filter(ServerWebExchange exchange, WebFilterChain chain) {
+        if (!isApiKeyAuthEnabled()) {
+            return chain.filter(exchange);
+        }
+
         if (validKeys.isEmpty()) {
             initValidKeys();
         }
@@ -47,8 +52,7 @@ public class ApiKeyAuthFilter implements WebFilter {
         }
 
         if (!authHeader.startsWith(API_KEY_PREFIX)) {
-            log.warn("Invalid API key format: {}", requestPath);
-            return unauthorized(exchange, "Invalid API key format");
+            return chain.filter(exchange);
         }
 
         String apiKey = authHeader.substring(API_KEY_PREFIX.length());
@@ -67,10 +71,16 @@ public class ApiKeyAuthFilter implements WebFilter {
         return chain.filter(exchange);
     }
 
+    private boolean isApiKeyAuthEnabled() {
+        return authConfig.getMode() == AuthConfig.AuthMode.API_KEY ||
+               authConfig.getMode() == AuthConfig.AuthMode.BOTH;
+    }
+
     private void initValidKeys() {
         validKeys.clear();
         keyExpiryMap.clear();
         
+        String apiKeys = authConfig.getApiKeys();
         if (apiKeys != null && !apiKeys.isEmpty()) {
             for (String keyEntry : apiKeys.split(",")) {
                 String[] parts = keyEntry.trim().split(":");
@@ -108,8 +118,7 @@ public class ApiKeyAuthFilter implements WebFilter {
 
     private boolean isPublicEndpoint(String path) {
         return path.startsWith("/api/v1/health") || 
-               path.startsWith("/api/v1/models") ||
-               path.startsWith("/api/v1/auth");
+               path.startsWith("/api/v1/models");
     }
 
     private Mono<Void> unauthorized(ServerWebExchange exchange, String message) {
